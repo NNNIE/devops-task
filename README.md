@@ -516,8 +516,8 @@ python-app-5d9d5f795d-z7pw4   1/1     Running   0          14s   10.47.64.80   <
 
 - Test
 ```
-http://<master-ip>:31895/users
-http://<master-ip>:31895/products
+http://<master-ip>:30080/users
+http://<master-ip>:30080/products
 ```
 
 ## 4. Expose the Service to the Internet: Ensure the deployed service is accessible externally by configuring a Kubernetes Ingress.

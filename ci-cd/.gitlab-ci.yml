@@ -1,0 +1,323 @@
+variables:
+  GIT_STRATEGY: clone
+  IMAGE_NAME: "python-app"
+  KUBE_NAMESPACE: "test-python"
+  # AWS ECR Registry - update with your account ID
+  DOCKER_REGISTRY: "299640718677.dkr.ecr.us-east-1.amazonaws.com"
+
+stages:
+  - build_local
+  - build_and_push_ecr
+  - deploy_local
+  - deploy_aws
+
+build_python_app:
+  stage: build_local
+  script:
+    - docker build --squash --progress=plain --no-cache -t $IMAGE_NAME:$CI_COMMIT_SHORT_SHA -f docker/Dockerfile .
+    - docker tag $IMAGE_NAME:$CI_COMMIT_SHORT_SHA $IMAGE_NAME:latest
+    - docker image prune -f
+  only:
+    changes:
+      - Dockerfile
+      - app/**/*
+      - run.py
+      - requirements.txt
+    refs:
+      - master
+
+build_and_push_ecr:
+  stage: build_and_push_ecr
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+    AWS_DEFAULT_REGION: "us-east-1"
+  before_script:
+    # Install AWS CLI
+    - apk add --no-cache aws-cli
+    
+    # Configure AWS credentials
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+    - aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+    - aws configure set region $AWS_DEFAULT_REGION
+    
+    # Login to ECR
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    
+    # Create ECR repository if it doesn't exist (ignore if already exists)
+    - aws ecr describe-repositories --repository-names $IMAGE_NAME --region $AWS_DEFAULT_REGION || aws ecr create-repository --repository-name $IMAGE_NAME --region $AWS_DEFAULT_REGION
+  script:
+    # Build Docker image
+    - docker build --progress=plain --no-cache -t $IMAGE_NAME:$CI_COMMIT_SHORT_SHA -f docker/Dockerfile .
+    
+    # Tag for ECR
+    - docker tag $IMAGE_NAME:$CI_COMMIT_SHORT_SHA $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+    - docker tag $IMAGE_NAME:$CI_COMMIT_SHORT_SHA $DOCKER_REGISTRY/$IMAGE_NAME:latest
+    
+    # Push to ECR
+    - docker push $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+    - docker push $DOCKER_REGISTRY/$IMAGE_NAME:latest
+    
+    # Verify push
+    - echo "Successfully pushed to ECR:"
+    - echo "  $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+    - echo "  $DOCKER_REGISTRY/$IMAGE_NAME:latest"
+    
+    # Clean up local images
+    - docker rmi $IMAGE_NAME:$CI_COMMIT_SHORT_SHA || true
+    - docker rmi $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA || true
+    - docker rmi $DOCKER_REGISTRY/$IMAGE_NAME:latest || true
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 hour
+  after_script:
+    # Create build environment file for downstream jobs
+    - echo "ECR_IMAGE_URI=$DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA" > build.env
+    - echo "ECR_LATEST_URI=$DOCKER_REGISTRY/$IMAGE_NAME:latest" >> build.env
+  only:
+    refs:
+      - master
+  when: manual
+
+deploy_application:
+  stage: deploy_local
+  image: bitnami/kubectl:latest
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    - kubectl version --client
+  script:
+    # Create namespace if it doesn't exist
+    - kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    
+    # Update deployment image tag in k8s-local files
+    - sed -i "s|image: python-app:.*|image: $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA|g" k8s-local/deployment.yml
+    
+    # Apply deployment and service from k8s-local folder
+    - kubectl apply -f k8s-local/deployment.yml
+    - kubectl apply -f k8s-local/svc.yml
+    
+    # Wait for deployment to be ready
+    - kubectl rollout status deployment/python-app -n $KUBE_NAMESPACE --timeout=300s
+    
+    # Verify deployment
+    - kubectl get pods -n $KUBE_NAMESPACE -l app=python-app
+    - kubectl get services -n $KUBE_NAMESPACE
+    
+    # Run smoke tests
+    - kubectl exec -n $KUBE_NAMESPACE deployment/python-app -- curl -f http://localhost:5000/users
+    - kubectl exec -n $KUBE_NAMESPACE deployment/python-app -- curl -f http://localhost:5000/products
+  environment:
+    name: staging
+    url: http://staging.yourdomain.com
+  dependencies:
+    - build_python_app
+  only:
+    refs:
+      - master
+      - main
+  when: manual
+
+deploy_aws_cloud:
+  stage: deploy_aws
+  image: bitnami/kubectl:latest
+  variables:
+    AWS_KUBE_NAMESPACE: "flask-microservices"
+    AWS_CLUSTER_NAME: "flask-microservices-cluster"
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$AWS_KUBE_CONFIG" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    - kubectl version --client
+    - kubectl cluster-info
+  script:
+    # Create namespace if it doesn't exist
+    - kubectl create namespace $AWS_KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    
+    # Create temporary deployment file for AWS with ECR image
+    - |
+      cat > aws-deployment.yml <<EOF
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        labels:
+          app: python-app
+          version: v1.0
+        name: python-app
+        namespace: $AWS_KUBE_NAMESPACE
+      spec:
+        selector:
+          matchLabels:
+            app: python-app
+        replicas: 3
+        strategy:
+          rollingUpdate:
+            maxSurge: 25%
+            maxUnavailable: 25%
+          type: RollingUpdate
+        template:
+          metadata:
+            labels:
+              app: python-app
+              version: v1.0
+          spec:
+            containers:
+            - image: $DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+              imagePullPolicy: Always
+              name: python-app
+              ports:
+              - containerPort: 5000
+                protocol: TCP
+              env:
+              - name: FLASK_ENV
+                value: "production"
+              - name: PORT
+                value: "5000"
+              livenessProbe:
+                httpGet:
+                  path: /users
+                  port: 5000
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 3
+              readinessProbe:
+                httpGet:
+                  path: /users
+                  port: 5000
+                initialDelaySeconds: 5
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 3
+              resources:
+                limits:
+                  cpu: 500m
+                  memory: 1Gi
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+            restartPolicy: Always
+      EOF
+    
+    # Create service file for AWS
+    - |
+      cat > aws-service.yml <<EOF
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: python-app-service
+        namespace: $AWS_KUBE_NAMESPACE
+        labels:
+          app: python-app
+          service: flask-microservices
+      spec:
+        selector:
+          app: python-app
+        ports:
+          - name: http
+            port: 80
+            targetPort: 5000
+            protocol: TCP
+        type: ClusterIP
+      EOF
+    
+    # Create ingress file for AWS with separate paths for users and products
+    - |
+      cat > aws-ingress.yml <<EOF
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: flask-microservices-ingress
+        namespace: $AWS_KUBE_NAMESPACE
+        annotations:
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/healthcheck-path: /users
+          alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+          alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+          alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+          alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+          kubernetes.io/ingress.class: alb
+        labels:
+          app: python-app
+      spec:
+        rules:
+          - http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: python-app-service
+                      port:
+                        number: 80
+                - path: /users
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: python-app-service
+                      port:
+                        number: 80
+                - path: /products
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: python-app-service
+                      port:
+                        number: 80
+      EOF
+    
+    # Apply all resources
+    - kubectl apply -f aws-deployment.yml
+    - kubectl apply -f aws-service.yml
+    - kubectl apply -f aws-ingress.yml
+    
+    # Wait for deployment to be ready
+    - kubectl rollout status deployment/python-app -n $AWS_KUBE_NAMESPACE --timeout=600s
+    
+    # Verify deployment
+    - kubectl get pods -n $AWS_KUBE_NAMESPACE -l app=python-app
+    - kubectl get services -n $AWS_KUBE_NAMESPACE
+    - kubectl get ingress -n $AWS_KUBE_NAMESPACE
+    
+    # Get ingress URL
+    - echo "Getting ALB DNS name..."
+    - ALB_DNS=$(kubectl get ingress flask-microservices-ingress -n $AWS_KUBE_NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+    - echo "ALB DNS Name: $ALB_DNS"
+    - echo "Access your application at: http://$ALB_DNS"
+    - echo "Users endpoint: http://$ALB_DNS/users"
+    - echo "Products endpoint: http://$ALB_DNS/products"
+    
+    # Wait for ALB to be ready and run smoke tests
+    - echo "Waiting for ALB to be ready..."
+    - sleep 120
+    - |
+      if [ ! -z "$ALB_DNS" ]; then
+        echo "Testing endpoints..."
+        curl -f "http://$ALB_DNS/users" || echo "Users endpoint not ready yet"
+        curl -f "http://$ALB_DNS/products" || echo "Products endpoint not ready yet"
+      else
+        echo "ALB DNS not available yet, check ingress status manually"
+      fi
+    
+    # Clean up temporary files
+    - rm -f aws-deployment.yml aws-service.yml aws-ingress.yml
+    
+  environment:
+    name: aws-production
+    url: http://$ALB_DNS
+  dependencies:
+    - build_and_push_ecr
+  only:
+    refs:
+      - master
+      - main
+  when: manual
+  allow_failure: true

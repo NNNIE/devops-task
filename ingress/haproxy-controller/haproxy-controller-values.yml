@@ -1,0 +1,39 @@
+controller:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/instance
+              operator: In
+              values:
+              - haproxy
+          topologyKey: kubernetes.io/hostname
+        weight: 100
+
+  config:
+    log-format: '%ci:%cp [%t] %ft %b/%s %TR/%Tw/%Tc/%Tr/%Tt %ST %B %ts %ac/%fc/%bc/%sc/%rc
+     %sq/%bq %hr %hs %si %sp %bi:%bp "%r" %fp %fi'
+
+  logging:
+    traffic:
+       address:  "stdout"
+       format:   "raw"
+       facility: "daemon"
+
+  service:
+    type: LoadBalancer
+    nodePorts:
+      http: 30721
+      https: 30722
+      stat: 30724
+      prometheus: 30725

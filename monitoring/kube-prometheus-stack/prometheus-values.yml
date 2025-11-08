@@ -1,0 +1,61 @@
+grafana:
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: 1
+      folder: /tmp/dashboards
+      folderAnnotation: grafana_folder
+      provider:
+        allowUiUpdates: true
+        foldersFromFilesStructure: true
+
+  adminPassword: P@ssw0rd
+  service:
+    enabled: true
+    type: NodePort
+    port: 80
+    targetPort: 3000
+    nodePort: 31100
+    portName: service
+  persistence:
+    type: pvc
+    enabled: true
+    storageClassName:  local-path
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    finalizers:
+      - kubernetes.io/pvc-protection
+
+prometheus:
+  prometheusSpec:
+    routePrefix: /prometheus
+    externalUrl: http://prometheus-stack-kube-prom-prometheus.monitoring:9090/prometheus
+    retention: 15d
+    scrapeInterval: 30s
+    scrapeTimeout: 30s
+    resources:
+      limits:
+        cpu: 2
+        memory: 8Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName:  local-path
+          accessModes: [ "ReadWriteOnce" ]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+

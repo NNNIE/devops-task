@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: python-app
+    version: v1.0
+  name: python-app
+  namespace: test-python
+spec:
+  selector:
+    matchLabels:
+      app: python-app
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: python-app
+        version: v1.0
+    spec:
+      nodeName: k8s-worker20-staging.eventum.local
+      containers:
+      - image: python-app:1.0
+        imagePullPolicy: Never
+        name: python-app
+        ports:
+        - containerPort: 5000
+          protocol: TCP
+        env:
+        - name: FLASK_ENV
+          value: "production"
+        - name: PORT
+          value: "5000"
+        livenessProbe:
+          httpGet:
+            path: /users
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /users
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      restartPolicy: Always
+

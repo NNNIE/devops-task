@@ -16,7 +16,8 @@
 ### Create a Dockerfile, build the docker image and run a container to test
 - docker build --squash --progress=plain --no-cache  -t python-app:1.0 -f Dockerfile .
 
-<div style="height:200px; overflow-y:auto; border:1px solid #ccc; padding:10px;">
+<details>
+  <summary>Click to expand build output</summary>
 
 WARNING: experimental flag squash is removed with BuildKit. You should squash inside build using a multi-stage Dockerfile for efficiency.
 #0 building with "default" instance using docker driver
@@ -382,7 +383,7 @@ WARNING: experimental flag squash is removed with BuildKit. You should squash in
 #13 naming to docker.io/library/python-app:1.0 done
 #13 DONE 2.2s
 
-</div>
+</details>
 
 
 - docker image ls | grep python

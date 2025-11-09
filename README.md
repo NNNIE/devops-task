@@ -14,7 +14,7 @@
 - Test endpoints http://127.0.0.1:5000/users and http://127.0.0.1:5000/products
 
 ### Create a Dockerfile, build the docker image and run a container to test
-- docker build --squash --progress=plain --no-cache  -t python-app:1.0 -f Dockerfile .
+- docker build --squash --progress=plain --no-cache  -t python-app:1.0 -f docker/Dockerfile .
 
 <details>
   <summary>Click to expand build output</summary>
@@ -451,12 +451,6 @@ node_group_max_size = 4
 node_group_min_size = 1
 ```
 
-### Estimated Cost:
-- **EKS Cluster**: $0.10/hour (~$73/month)
-- **2x t3.medium nodes**: ~$60/month  
-- **NAT Gateways**: ~$32/month
-- **Total**: ~$165/month
-
 ### Verify Deployment:
 ```bash
 # Check cluster status
@@ -551,7 +545,12 @@ kubectl apply -f ingress/ingress.yml
 - for monitoring I will be using prometheus and grafana dashbaords. 
 - kube-prometheus-stack provides service monitors to monitor k8s cluster. The stack also provides grafana
 ```
-helm install prometheus-stack kube-prometheus-stack-66.3.1.tgz -f prometheus-values.yml -n monitoring
+cd monitoring/kube-prometheus-stack/ && helm install prometheus-stack kube-prometheus-stack-66.3.1.tgz -f prometheus-values.yml -n monitoring
+```
+
+- Expose prometheus using ingress
+```
+cd monitoring/kube-prometheus-stack/ && kubectl apply -f ingress-prometheus.yml -n monitoring
 ```
 - For the python app, I will be using prometheus client python (https://prometheus.github.io/client_python/)
 - Implement /metrics endpoint
@@ -581,8 +580,10 @@ curl http://localhost:5000/metrics
 
 - create servicemonitor for the python app svc (this is how we add targets to prometheus)
 ```
-kubectl apply -f servicemonitor.yml -n monitoring
+cd monitoring/kube-prometheus-stack kubectl apply -f servicemonitor.yml -n monitoring
 ```
+
+- For monitoring in aws, we use cloudwatch using fluentd to collect container logs and index them in elasticsearch for logging (monitoring/cloudwatch.yaml)
 
 
 
